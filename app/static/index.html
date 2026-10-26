@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kyte Voice Agent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%237c5cff'/%3E%3Cpath d='M10 8v16M10 16l9-8M10 16l9 8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">K</div>
+      <div>
+        <h1>Kyte Voice Agent</h1>
+        <p>RAG + MCP powered calling assistant</p>
+      </div>
+    </div>
+    <div class="badges" id="badges"></div>
+  </header>
+
+  <main class="layout">
+    <!-- ============ Call panel ============ -->
+    <section class="card call">
+      <div class="call-status">
+        <span class="dot" id="dot"></span>
+        <span id="stateLabel">Ready to call</span>
+        <span class="timer" id="timer">00:00</span>
+      </div>
+
+      <div class="orb-wrap">
+        <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+        <button class="orb" id="orb" aria-label="Start call">
+          <svg viewBox="0 0 24 24" class="ico mic"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V22h2v-3.08A7 7 0 0 0 19 12h-2Z"/></svg>
+          <svg viewBox="0 0 24 24" class="ico stop"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>
+        </button>
+      </div>
+
+      <canvas id="wave" width="600" height="80"></canvas>
+      <div class="hint" id="hint">Press the call button and just talk. I'll answer out loud.</div>
+
+      <div class="actions">
+        <button class="btn primary" id="callBtn">
+          <svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1l-2.2 2.2Z"/></svg>
+          <span>Start call</span>
+        </button>
+        <button class="btn ghost" id="muteBtn" title="Mute / unmute spoken replies">🔊 Voice on</button>
+        <button class="btn ghost" id="clearBtn" title="Clear conversation">Clear</button>
+      </div>
+
+      <div class="tools">
+        <h3>Connected capabilities</h3>
+        <div id="toolList" class="toollist"></div>
+      </div>
+    </section>
+
+    <!-- ============ Conversation ============ -->
+    <section class="card chat">
+      <div class="chat-head">
+        <h2>Conversation</h2>
+        <div class="legend"><span class="tag rag">RAG</span> knowledge base <span class="tag mcp">MCP</span> system tool</div>
+      </div>
+
+      <div class="feed" id="feed">
+        <div class="empty" id="empty">
+          <div class="empty-icon">🎙️</div>
+          <h3>Ask me anything</h3>
+          <p>Try a question that needs the knowledge base, a live system tool, or both.</p>
+          <div class="chips" id="chips"></div>
+        </div>
+      </div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <input id="textIn" type="text" placeholder="Or type a message…" maxlength="500">
+        <button class="send" type="submit" aria-label="Send">
+          <svg viewBox="0 0 24 24"><path d="M3.4 20.4 21 12 3.4 3.6l-.01 6.53L15 12 3.39 13.87z"/></svg>
+        </button>
+      </form>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
