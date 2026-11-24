@@ -1,8 +1,10 @@
 """Orchestrator: STT -> LLM (tool routing) -> RAG | MCP tools -> answer.
 
 The LLM is given one local function tool (`search_knowledge_base`, backed by the
-vector store) plus every tool advertised by the MCP server. It decides per query
-which to call - possibly both - and we loop until it produces a final answer.
+vector store) plus the MCP server tools named in the allowlist (MCP_TOOL_ALLOWLIST).
+It decides per query which to call - possibly both - and we loop until it produces
+a final answer. Tools the server advertises but the allowlist omits are never shown
+to, or executable by, the LLM.
 """
 
 from __future__ import annotations
@@ -13,13 +15,18 @@ import logging
 import sys
 import time
 from contextlib import AsyncExitStack
+from datetime import timedelta
 from typing import Any
 
+import anyio
+import openai
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import McpError
 from mcp.types import TextContent
 from openai import AsyncOpenAI
 from openai.types.chat import (
+    ChatCompletion,
     ChatCompletionMessage,
     ChatCompletionMessageFunctionToolCall,
     ChatCompletionMessageParam,
@@ -27,6 +34,7 @@ from openai.types.chat import (
 )
 
 from . import config
+from .errors import LLMUnavailableError, SpeechToTextError
 from .rag import VectorStore
 
 log = logging.getLogger("agent")
@@ -48,8 +56,8 @@ def build_system_prompt(
         "Tool use:\n"
         f"- For ANY question about {company_name} ({kb_topics}), call {RAG_NAME} and answer ONLY "
         "from what it returns. If it does not contain the answer, say you don't have that information.\n"
-        "- For current time/date, weather, arithmetic, system info or app logs, call the matching "
-        "system tool. Never guess these or do maths in your head.\n"
+        "- For the current time/date, the weather or any arithmetic, call the matching tool. "
+        "Never guess these or do maths in your head.\n"
         "- If a question needs both (e.g. a fee from the knowledge base applied to an amount), call the "
         "knowledge base first, then the calculator.\n"
         "- For greetings or small talk, answer directly without tools."
@@ -72,10 +80,51 @@ def build_rag_tool(company_name: str, kb_topics: str) -> ChatCompletionToolParam
     }
 
 
+MAX_TOOL_NAME_CHARS = 64
+
+
+class ToolNotAllowedError(Exception):
+    """The LLM asked for a tool that is not exposed to it."""
+
+
+class InvalidToolArgumentsError(ValueError):
+    """The LLM produced tool arguments that are not a JSON object."""
+
+
+class ToolUnavailableError(Exception):
+    """The tool backend (e.g. the MCP server) is not connected."""
+
+
+# Errors a tool call can fail with. Anything else is a bug and propagates.
+_TOOL_ERRORS = (
+    ToolNotAllowedError,
+    InvalidToolArgumentsError,
+    ToolUnavailableError,
+    McpError,
+    TimeoutError,
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    openai.OpenAIError,
+)
+
+
+def _tool_error_message(exc: BaseException) -> str:
+    """Client- and LLM-safe description of a tool failure (no internal details)."""
+    if isinstance(exc, ToolNotAllowedError):
+        return "Error: that tool is not available."
+    if isinstance(exc, InvalidToolArgumentsError):
+        return "Error: the tool arguments were invalid."
+    if isinstance(exc, TimeoutError) or (isinstance(exc, McpError) and "timed out" in str(exc).lower()):
+        return "Error: the tool took too long to respond."
+    return "Error: the tool is unavailable right now."
+
+
 class Agent:
     def __init__(self) -> None:
         self.llm = AsyncOpenAI(
-            api_key=config.OPENROUTER_API_KEY or "missing", base_url=config.OPENROUTER_BASE_URL
+            api_key=config.OPENROUTER_API_KEY or "missing",
+            base_url=config.OPENROUTER_BASE_URL,
+            timeout=config.LLM_TIMEOUT_SECONDS,
         )
         self.store = VectorStore()
         self.system_prompt = build_system_prompt(
@@ -97,14 +146,22 @@ class Agent:
         self._mcp = await self._stack.enter_async_context(ClientSession(read, write))
         await self._mcp.initialize()
         listed = await self._mcp.list_tools()
+        allowed = set(config.MCP_TOOL_ALLOWLIST)
         self.mcp_tools = [
             {
                 "type": "function",
                 "function": {"name": t.name, "description": t.description or "", "parameters": t.inputSchema},
             }
             for t in listed.tools
+            if t.name in allowed
         ]
-        log.info("MCP connected; tools: %s", [t.name for t in listed.tools])
+        hidden = sorted(t.name for t in listed.tools if t.name not in allowed)
+        missing = sorted(allowed - {t.name for t in listed.tools})
+        log.info("MCP connected; exposed tools: %s", [t["function"]["name"] for t in self.mcp_tools])
+        if hidden:
+            log.info("MCP tools not in MCP_TOOL_ALLOWLIST (hidden from the LLM): %s", hidden)
+        if missing:
+            log.warning("MCP_TOOL_ALLOWLIST names tools the server does not provide: %s", missing)
 
     async def stop(self) -> None:
         await self._stack.aclose()
@@ -118,9 +175,23 @@ class Agent:
 
     # ------------------------------------------------------------------ STT
     async def transcribe(self, wav_bytes: bytes) -> str:
-        """Speech-to-text via an audio-capable OpenRouter model."""
+        """Speech-to-text via an audio-capable OpenRouter model. Raises SpeechToTextError."""
         b64 = base64.b64encode(wav_bytes).decode()
-        resp = await self.llm.chat.completions.create(
+        try:
+            resp = await self._transcribe_request(b64)
+        except openai.OpenAIError as exc:
+            raise SpeechToTextError() from exc
+        if not resp.choices:
+            raise SpeechToTextError()
+        text = (resp.choices[0].message.content or "").strip().strip('"')
+        if config.LOG_TRANSCRIPTS:
+            log.info("STT: %r", text)
+        else:
+            log.info("STT: %d characters", len(text))
+        return text
+
+    async def _transcribe_request(self, b64: str) -> ChatCompletion:
+        return await self.llm.chat.completions.create(
             model=config.STT_MODEL,
             temperature=0,
             max_tokens=300,
@@ -138,18 +209,22 @@ class Agent:
                 }
             ],
         )
-        text = (resp.choices[0].message.content or "").strip().strip('"')
-        log.info("STT: %r", text)
-        return text
 
     # ------------------------------------------------------------ tool exec
+    def is_tool_allowed(self, name: str) -> bool:
+        return name == RAG_NAME or any(t["function"]["name"] == name for t in self.mcp_tools)
+
     async def _run_tool(self, name: str, args: dict[str, Any]) -> str:
+        if not self.is_tool_allowed(name):
+            raise ToolNotAllowedError(name)
         if name == RAG_NAME:
             hits = self.store.search(args.get("query", ""), k=3)
             return "\n\n".join(f"[{h['source']} / {h['title']}] {h['text']}" for h in hits)
         if self._mcp is None:
-            raise RuntimeError("MCP session is not connected; call start() first")
-        result = await self._mcp.call_tool(name, args)
+            raise ToolUnavailableError("MCP session is not connected")
+        result = await self._mcp.call_tool(
+            name, args, read_timeout_seconds=timedelta(seconds=config.TOOL_TIMEOUT_SECONDS)
+        )
         return "\n".join(c.text for c in result.content if isinstance(c, TextContent) and c.text) or (
             "(no output)"
         )
@@ -157,7 +232,10 @@ class Agent:
     async def _complete(
         self, messages: list[ChatCompletionMessageParam], tools: list[ChatCompletionToolParam]
     ) -> ChatCompletionMessage:
-        """Call the LLM, falling through the configured model list on provider errors."""
+        """Call the LLM, falling through the configured model list on provider errors.
+
+        Raises LLMUnavailableError when every model fails.
+        """
         last: Exception | None = None
         for model in config.LLM_MODELS:
             try:
@@ -172,10 +250,10 @@ class Agent:
                 if resp.choices:
                     return resp.choices[0].message
                 last = RuntimeError(f"{model} returned no choices")
-            except Exception as exc:  # noqa: BLE001 - narrowed to retryable errors in Phase 6
+            except openai.OpenAIError as exc:  # retry/fail-fast classification arrives in Phase 6
                 last = exc
-            log.warning("Model %s failed (%s); trying next", model, last)
-        raise last or RuntimeError("no LLM configured")
+            log.warning("Model %s failed (%s); trying next", model, type(last).__name__)
+        raise LLMUnavailableError() from last
 
     # ----------------------------------------------------------------- chat
     async def chat(self, session_id: str, user_text: str) -> dict[str, Any]:
@@ -216,15 +294,19 @@ class Agent:
                 }
             )
             for call in calls:
-                name = call.function.name
+                name = call.function.name[:MAX_TOOL_NAME_CHARS]
+                args: dict[str, Any] = {}
                 try:
-                    args = json.loads(call.function.arguments or "{}")
+                    args = _parse_tool_args(call.function.arguments)
                     output = await self._run_tool(name, args)
-                except Exception as exc:  # noqa: BLE001 - structured tool errors arrive in Phase 2/6
-                    args, output = {}, f"Error running {name}: {exc}"
-                    log.error("Tool %s failed: %s", name, exc)
+                except _TOOL_ERRORS as exc:
+                    output = _tool_error_message(exc)
+                    log.warning("Tool %s failed: %s", name, type(exc).__name__)
                 kind = "rag" if name == RAG_NAME else "mcp"
-                log.info("Route -> %s tool=%s args=%s", kind.upper(), name, args)
+                if config.LOG_TRANSCRIPTS:
+                    log.info("Route -> %s tool=%s args=%s", kind.upper(), name, args)
+                else:
+                    log.info("Route -> %s tool=%s", kind.upper(), name)
                 steps.append({"kind": kind, "tool": name, "args": args, "output": output})
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
 
@@ -234,3 +316,13 @@ class Agent:
 
     def reset(self, session_id: str) -> None:
         self.sessions.pop(session_id, None)
+
+
+def _parse_tool_args(raw: str | None) -> dict[str, Any]:
+    try:
+        args = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise InvalidToolArgumentsError("arguments are not valid JSON") from exc
+    if not isinstance(args, dict):
+        raise InvalidToolArgumentsError("arguments must be a JSON object")
+    return args

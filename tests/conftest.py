@@ -46,3 +46,25 @@ class ScriptedLLM:
         if isinstance(item, BaseException):
             raise item
         return SimpleNamespace(choices=[SimpleNamespace(message=item)])
+
+
+def make_wav(seconds: float = 0.5, rate: int = 16000) -> bytes:
+    """A valid 16-bit mono PCM WAV of silence."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\0\0" * int(seconds * rate))
+    return buf.getvalue()
+
+
+def connection_error(message: str = "connection failed") -> BaseException:
+    """An OpenAI SDK network error, as raised when the provider is unreachable."""
+    import httpx2  # the HTTP client the OpenAI SDK is built on
+    import openai
+
+    return openai.APIConnectionError(message=message, request=httpx2.Request("POST", "https://llm.invalid"))

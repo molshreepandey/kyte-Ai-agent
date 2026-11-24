@@ -58,8 +58,12 @@
   async function api(path, opts) {
     const r = await fetch(path, opts);
     if (!r.ok) {
-      let detail = r.statusText;
-      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      // Server errors use {"error": {"code", "message", "request_id"}}.
+      let detail = r.statusText || "Request failed";
+      try {
+        const body = await r.json();
+        detail = (body.error && body.error.message) || body.detail || detail;
+      } catch (_) {}
       throw new Error(detail);
     }
     return r.json();

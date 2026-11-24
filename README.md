@@ -5,7 +5,7 @@ A voice-activated AI agent that answers by combining **RAG** (knowledge retrieva
 **Pipeline:** mic audio → STT → LLM decides (RAG and/or MCP tool) → tool result → LLM answer → TTS
 
 - **RAG:** FAQ and product spec documents (`knowledge_base/`) are chunked, embedded and searched by cosine similarity.
-- **MCP:** a standalone MCP server (`app/mcp_server.py`) exposes 5 tools: current time, safe calculator, live weather, system info, and log reader.
+- **MCP:** a standalone MCP server (`app/mcp_server.py`) exposes customer-safe tools: current time, a bounded safe calculator and live weather. Only tools listed in `MCP_TOOL_ALLOWLIST` are shown to the LLM.
 - **Voice UI:** hands-free call mode with silence detection, live waveform, barge-in, and a routing trace that shows which RAG / MCP step each answer used. A text box is available as fallback.
 
 See [docs/HLD.md](docs/HLD.md) for the architecture diagram and design trade-offs.
@@ -71,6 +71,15 @@ On startup the app builds the vector index (cached in `data/`), launches the MCP
 | `COMPANY_DESCRIPTION` | no | `a digital money-management app` | One-line description of that business |
 | `KB_TOPICS` | no | `plans, fees, limits, ...` | Topics the knowledge base covers; tells the LLM when to search it |
 | `AGENT_NAME` | no | (none) | Optional name the assistant introduces itself with |
+| `ENVIRONMENT` | no | `development` | `production` disables `/docs`, `/redoc`, `/openapi.json` and enables HSTS |
+| `ADMIN_API_KEY` | no | (none) | Enables `/admin/*` (sent as `X-Admin-Key`). Unset = admin endpoints do not exist. Use 32+ random characters |
+| `MCP_TOOL_ALLOWLIST` | no | `get_current_time,calculate,get_weather` | MCP tools the LLM may see and call |
+| `TOOL_TIMEOUT_SECONDS` | no | `10` | Per-call timeout for MCP tools |
+| `LLM_TIMEOUT_SECONDS` | no | `30` | Per-request timeout for LLM / STT calls |
+| `MAX_TEXT_CHARS` | no | `2000` | Maximum chat message length |
+| `MAX_AUDIO_BYTES` | no | `2000000` | Maximum STT upload size (about 60 s of 16 kHz audio) |
+| `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_BURST` | no | `30` / `10` | Per-client-IP (and per-session) token bucket for `/api/*` and `/admin/*` |
+| `LOG_TRANSCRIPTS` | no | `false` | Log user transcripts and tool arguments (debugging only; this is user data) |
 | `HOST` / `PORT` | no | `127.0.0.1` / `8000` | Server bind address |
 
 ## Try these queries
@@ -97,11 +106,37 @@ docs/HLD.md        High-level design diagram + trade-offs
 tests/             Offline tests (no API key needed)
 ```
 
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/status` | UI status: models, index size, exposed tools |
+| `POST` | `/api/chat` | `{"text", "session_id"?}` -> `{"session_id", "answer", "steps", "latency_ms"}`. Omit `session_id` to start a new private conversation |
+| `POST` | `/api/stt` | multipart `audio` (16-bit PCM WAV) -> `{"text"}` |
+| `POST` | `/api/reset` | form `session_id` -> clears that conversation |
+| `GET` | `/admin/diagnostics` | Host and agent diagnostics. Requires `X-Admin-Key` |
+
+Interactive docs are at `/docs` in development. Every error uses one format, and internal exception details are never returned:
+
+```json
+{"error": {"code": "invalid_request", "message": "The request is invalid.", "request_id": "3f2c...", "details": [{"field": "body.text", "message": "..."}]}}
+```
+
+The `request_id` matches the `X-Request-ID` response header and the server logs.
+
+## Security
+
+- **Tools:** only allowlisted, reviewed MCP tools reach the LLM. Host diagnostics are at the admin endpoint, not exposed as LLM tools; there is no log-reading tool or endpoint.
+- **Input limits:** message length, session ID format, audio type/size and request body size (64 KB JSON, ~2 MB audio) are validated server-side.
+- **Rate limiting:** token bucket per client IP and per session. The limiter is in-process; behind a reverse proxy run uvicorn with `--proxy-headers` so the client IP is correct.
+- **Headers:** strict Content-Security-Policy (no inline or third-party scripts), `nosniff`, `DENY` framing, `no-referrer`; HSTS in production.
+- **Secrets:** only in environment variables / `.env` (git-ignored). Never commit `.env`.
+
 ## Customising
 
 - **Use your own business:** replace the sample files in `knowledge_base/` and set `COMPANY_NAME`, `COMPANY_DESCRIPTION` and `KB_TOPICS` in `.env`.
 - **Add knowledge:** drop `.md` / `.txt` files in `knowledge_base/` (use `## Heading` per topic) and restart. The index rebuilds automatically.
-- **Add a tool:** add a function decorated with `@mcp.tool()` in `app/mcp_server.py` and restart. The agent discovers it automatically.
+- **Add a tool:** add a function decorated with `@mcp.tool()` in `app/mcp_server.py`, review it (every tool is reachable by anonymous customers through the LLM, so it must be side-effect free, bounded in time and memory, and must not reveal host or other users' data), add its name to `MCP_TOOL_ALLOWLIST`, and restart.
 - **Debug the MCP server alone:** `npx @modelcontextprotocol/inspector python -m app.mcp_server`
 
 ## Development
@@ -135,9 +170,10 @@ No test needs an API key or network access. The backend suite covers calculator 
 - **Speech-to-text failed (400/404)**: your `STT_MODEL` doesn't accept audio. Use `google/gemini-2.5-flash` or another model with audio input.
 - **Mic button does nothing**: use Chrome/Edge on `localhost` and allow microphone permission. You can still type.
 - **No spoken reply**: check that the "Voice on" toggle is enabled and the system volume is up.
-- Logs are written to `logs/agent.log`, and the agent can read them through the `read_system_logs` tool ("any errors in the logs?").
+- **"The assistant is not configured yet"** in the UI: the server has no `OPENROUTER_API_KEY`. The server log states the exact cause; customers only see the generic message.
+- Logs are written to stdout and `logs/agent.log`. User transcripts and tool arguments are not logged unless `LOG_TRANSCRIPTS=true`.
 
 ## Demo video outline (3-5 min)
 
 1. (0:00-2:00) Walk through `docs/HLD.md`: voice in, STT, LLM router, RAG vs MCP branches, TTS out. Explain the trade-offs.
-2. (2:00-4:30) Live demo: ask the "2,500 dollars on Premium" question (RAG then MCP), then the weather and logs queries, and show the routing trace cards.
+2. (2:00-4:30) Live demo: ask the "2,500 dollars on Premium" question (RAG then MCP), then the weather and time queries, and show the routing trace cards.

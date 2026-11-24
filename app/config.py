@@ -36,3 +36,31 @@ STATIC_DIR = ROOT / "app" / "static"
 LOG_DIR = ROOT / "logs"
 
 MAX_TOOL_ROUNDS = 5
+
+
+def _bool(name: str, default: bool) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# --------------------------------------------------------------- security
+# "development" or "production". Production disables the interactive API docs and
+# enables HSTS.
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").strip().lower()
+# Protects /admin/* endpoints. Leave empty to disable them entirely.
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
+# MCP tools the LLM may see and call. Anything else the MCP server advertises is ignored,
+# so adding a tool to the server never exposes it to customers by accident.
+MCP_TOOL_ALLOWLIST = [
+    t.strip()
+    for t in os.getenv("MCP_TOOL_ALLOWLIST", "get_current_time,calculate,get_weather").split(",")
+    if t.strip()
+]
+TOOL_TIMEOUT_SECONDS = float(os.getenv("TOOL_TIMEOUT_SECONDS", "10"))
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "2000"))
+MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(2_000_000)))
+MAX_JSON_BODY_BYTES = 64 * 1024
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "10"))
+# Transcripts and tool arguments are user content. Keep them out of logs unless debugging.
+LOG_TRANSCRIPTS = _bool("LOG_TRANSCRIPTS", False)

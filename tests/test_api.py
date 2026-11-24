@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.rag import VectorStore
-from tests.conftest import ScriptedLLM, answer, calls, tool_call
+from app.ratelimit import InMemoryRateLimiter
+from tests.conftest import ScriptedLLM, answer, calls, connection_error, make_wav, tool_call
 
 
 @pytest.fixture(scope="module")
@@ -25,6 +26,8 @@ def api(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[TestClient, 
     saved_key = config.OPENROUTER_API_KEY
     config.OPENROUTER_API_KEY = ""
     main.agent.store = VectorStore(data_dir=tmp_path_factory.mktemp("data"))
+    # Generous limits so this module's many requests are not throttled (limits are tested separately).
+    main.limiter = InMemoryRateLimiter(per_minute=100_000, burst=100_000)
     with TestClient(main.app) as client:
         yield client, main
     config.OPENROUTER_API_KEY = saved_key
@@ -66,12 +69,15 @@ def test_chat_requires_api_key(api: tuple[TestClient, Any]) -> None:
     client, _ = api
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
     assert r.status_code == 503
+    assert r.json()["error"]["code"] == "not_configured"
+    assert "OPENROUTER" not in r.text  # configuration details are for operators, not customers
 
 
 def test_chat_rejects_blank_text(api: tuple[TestClient, Any], with_key: None) -> None:
     client, _ = api
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "   "})
-    assert r.status_code == 400
+    assert r.status_code == 422
+    assert r.json()["error"]["details"][0]["field"] == "body.text"
 
 
 def test_chat_direct_answer(api: tuple[TestClient, Any], with_key: None) -> None:
@@ -80,6 +86,7 @@ def test_chat_direct_answer(api: tuple[TestClient, Any], with_key: None) -> None
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
     assert r.status_code == 200
     body = r.json()
+    assert body["session_id"]
     assert body["answer"] == "Hello there."
     assert body["steps"] == []
     assert isinstance(body["latency_ms"], int)
@@ -126,9 +133,10 @@ def test_reset_clears_history(api: tuple[TestClient, Any], with_key: None) -> No
 
 def test_chat_llm_failure_returns_502(api: tuple[TestClient, Any], with_key: None) -> None:
     client, main = api
-    main.agent.llm = ScriptedLLM(*[RuntimeError("provider down")] * len(config.LLM_MODELS))
+    main.agent.llm = ScriptedLLM(*[connection_error()] * len(config.LLM_MODELS))
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
     assert r.status_code == 502
+    assert r.json()["error"]["code"] == "llm_unavailable"
 
 
 def test_chat_tool_failure_is_reported_not_raised(api: tuple[TestClient, Any], with_key: None) -> None:
@@ -139,20 +147,20 @@ def test_chat_tool_failure_is_reported_not_raised(api: tuple[TestClient, Any], w
     )
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "use a missing tool"})
     assert r.status_code == 200
-    # Current behaviour: the unknown name is forwarded to the MCP server, which rejects it.
-    assert "no_such_tool" in r.json()["steps"][0]["output"]
+    # Unknown tools are rejected by the agent's allowlist; they never reach the MCP server.
+    assert r.json()["steps"][0]["output"] == "Error: that tool is not available."
 
 
 # -------------------------------------------------------------------------- stt
 def test_stt_requires_api_key(api: tuple[TestClient, Any]) -> None:
     client, _ = api
-    r = client.post("/api/stt", files={"audio": ("a.wav", b"RIFF" + b"\0" * 4000, "audio/wav")})
+    r = client.post("/api/stt", files={"audio": ("a.wav", make_wav(), "audio/wav")})
     assert r.status_code == 503
 
 
 def test_stt_ignores_tiny_audio(api: tuple[TestClient, Any], with_key: None) -> None:
     client, _ = api
-    r = client.post("/api/stt", files={"audio": ("a.wav", b"RIFF" + b"\0" * 100, "audio/wav")})
+    r = client.post("/api/stt", files={"audio": ("a.wav", make_wav(seconds=0.01), "audio/wav")})
     assert r.status_code == 200
     assert r.json() == {"text": ""}
 
@@ -161,7 +169,7 @@ def test_stt_transcribes(api: tuple[TestClient, Any], with_key: None) -> None:
     client, main = api
     llm = ScriptedLLM(answer('"what time is it"'))
     main.agent.llm = llm
-    r = client.post("/api/stt", files={"audio": ("a.wav", b"RIFF" + b"\0" * 4000, "audio/wav")})
+    r = client.post("/api/stt", files={"audio": ("a.wav", make_wav(), "audio/wav")})
     assert r.status_code == 200
     assert r.json() == {"text": "what time is it"}
     content = llm.requests[0]["messages"][0]["content"]

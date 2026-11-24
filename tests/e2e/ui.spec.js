@@ -10,12 +10,30 @@ const BOT_REPLY = {
   latency_ms: 1234,
 };
 
+let consoleErrors;
+
 test.beforeEach(async ({ page }) => {
+  // Any console error (including Content-Security-Policy violations) fails the test.
+  consoleErrors = [];
+  page.on("console", (msg) => msg.type() === "error" && consoleErrors.push(msg.text()));
+  page.on("pageerror", (err) => consoleErrors.push(String(err)));
   // Keep tests silent and deterministic: no real speech synthesis.
   await page.addInitScript(() => {
     // @ts-ignore
     window.speechSynthesis && (window.speechSynthesis.speak = (u) => u.onend && u.onend());
   });
+});
+
+test.afterEach(() => {
+  // Error responses that a test stubs on purpose are logged by Chrome as failed loads.
+  const unexpected = consoleErrors.filter((e) => !/Failed to load resource/.test(e));
+  expect(unexpected, "console errors / CSP violations").toEqual([]);
+});
+
+test("page is served with a strict Content-Security-Policy", async ({ page }) => {
+  const response = await page.goto("/");
+  expect(response.headers()["content-security-policy"]).toContain("script-src 'self'");
+  await expect(page.locator(".chips .chip")).toHaveCount(4); // scripts ran under the CSP
 });
 
 test("page loads with status badges, tools and example chips", async ({ page }) => {
@@ -26,6 +44,9 @@ test("page loads with status badges, tools and example chips", async ({ page }) 
   await expect(page.locator("#badges")).toContainText("OPENROUTER_API_KEY missing");
   await expect(page.locator("#toolList .tool.rag")).toHaveText(["search_knowledge_base"]);
   await expect(page.locator("#toolList .tool.mcp", { hasText: "calculate" })).toBeVisible();
+  await expect(page.locator("#toolList .tool")).toHaveText([
+    "search_knowledge_base", "get_current_time", "calculate", "get_weather",
+  ]);
   await expect(page.locator(".chips .chip")).toHaveCount(4);
   await expect(page.locator("#wave")).toBeVisible();
 });
@@ -57,14 +78,25 @@ test("example chip sends its question", async ({ page }) => {
   await expect(page.locator(".msg.bot .bubble")).toHaveText("ok");
 });
 
-test("server error is shown to the user", async ({ page }) => {
+test("server error message from the error envelope is shown to the user", async ({ page }) => {
   await page.route("**/api/chat", (route) =>
-    route.fulfill({ status: 502, json: { detail: "LLM request failed" } }),
+    route.fulfill({
+      status: 502,
+      json: { error: { code: "llm_unavailable", message: "The assistant is temporarily unavailable.", request_id: "r1" } },
+    }),
   );
   await page.goto("/");
   await page.fill("#textIn", "hello");
   await page.press("#textIn", "Enter");
-  await expect(page.locator(".msg.bot .bubble.err")).toContainText("LLM request failed");
+  await expect(page.locator(".msg.bot .bubble.err")).toContainText("The assistant is temporarily unavailable.");
+});
+
+test("real server validation error is shown (no stub)", async ({ page }) => {
+  // The test server has no API key, so the real backend answers with its 503 envelope.
+  await page.goto("/");
+  await page.fill("#textIn", "hello");
+  await page.press("#textIn", "Enter");
+  await expect(page.locator(".msg.bot .bubble.err")).toContainText("not configured");
 });
 
 test("clear resets the conversation and calls /api/reset", async ({ page }) => {
