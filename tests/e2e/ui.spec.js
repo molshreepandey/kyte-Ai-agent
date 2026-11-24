@@ -20,7 +20,8 @@ test.beforeEach(async ({ page }) => {
 
 test("page loads with status badges, tools and example chips", async ({ page }) => {
   await page.goto("/");
-  await expect(page.locator("h1")).toBeVisible();
+  await expect(page).toHaveTitle("AI Voice Agent");
+  await expect(page.locator("h1")).toHaveText("AI Voice Agent");
   await expect(page.locator("#badges")).toContainText("Vector store");
   await expect(page.locator("#badges")).toContainText("OPENROUTER_API_KEY missing");
   await expect(page.locator("#toolList .tool.rag")).toHaveText(["search_knowledge_base"]);

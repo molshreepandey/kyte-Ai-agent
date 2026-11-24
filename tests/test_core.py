@@ -39,8 +39,8 @@ def store(tmp_path, monkeypatch):
     [
         ("what is the daily transfer limit on the plus plan", "What are the transfer limits?"),
         ("my card was stolen", "What should I do if my card is lost or stolen?"),
-        ("how much cashback does the card give", "Kyte Card"),
-        ("how do I reset my pin", "How do I reset my Kyte PIN?"),
+        ("how much cashback does the card give", "Demo Wallet Card"),
+        ("how do I reset my pin", "How do I reset my Demo Wallet PIN?"),
     ],
 )
 def test_rag_retrieval(store, query, expected):

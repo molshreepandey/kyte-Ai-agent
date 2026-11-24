@@ -1,4 +1,4 @@
-# Kyte Voice Agent
+# AI Voice Agent
 
 A voice-activated AI agent that answers by combining **RAG** (knowledge retrieval) and **MCP** (real-time tool execution), with a "phone call" web UI. Built in Python; the LLM and embeddings go through [OpenRouter](https://openrouter.ai). Speech-to-text uses the browser's Web Speech API by default, or an audio-capable OpenRouter model when `STT_MODE=openrouter`.
 
@@ -29,8 +29,8 @@ flowchart LR
 ## Setup (Windows PowerShell)
 
 ```powershell
-git clone <your-repo-url> kyte-voice-agent
-cd kyte-voice-agent
+git clone <your-repo-url> ai-voice-agent
+cd ai-voice-agent
 
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -67,6 +67,10 @@ On startup the app builds the vector index (cached in `data/`), launches the MCP
 | `STT_MODE` | no | `browser` | `browser` = free Web Speech API (Chrome/Edge); `openrouter` = audio model via OpenRouter (needs >= $0.50 credit) |
 | `STT_MODEL` | no | `google/gemini-2.5-flash` | Audio-input model used for transcription |
 | `EMBEDDING_MODEL` | no | `openai/text-embedding-3-small` | RAG embeddings (falls back to local TF-IDF if unavailable) |
+| `COMPANY_NAME` | no | `Demo Wallet` | Business the assistant represents (used in the prompt and RAG tool description) |
+| `COMPANY_DESCRIPTION` | no | `a digital money-management app` | One-line description of that business |
+| `KB_TOPICS` | no | `plans, fees, limits, ...` | Topics the knowledge base covers; tells the LLM when to search it |
+| `AGENT_NAME` | no | (none) | Optional name the assistant introduces itself with |
 | `HOST` / `PORT` | no | `127.0.0.1` / `8000` | Server bind address |
 
 ## Try these queries
@@ -88,13 +92,14 @@ app/
   mcp_server.py    MCP server with the system tools
   config.py        Environment config
   static/          Web UI (index.html, style.css, app.js)
-knowledge_base/    Mocked Kyte Money FAQ + product specs (add your own .md/.txt)
+knowledge_base/    Fictional "Demo Wallet" sample FAQ + product specs (replace with your own .md/.txt)
 docs/HLD.md        High-level design diagram + trade-offs
 tests/             Offline tests (no API key needed)
 ```
 
 ## Customising
 
+- **Use your own business:** replace the sample files in `knowledge_base/` and set `COMPANY_NAME`, `COMPANY_DESCRIPTION` and `KB_TOPICS` in `.env`.
 - **Add knowledge:** drop `.md` / `.txt` files in `knowledge_base/` (use `## Heading` per topic) and restart. The index rebuilds automatically.
 - **Add a tool:** add a function decorated with `@mcp.tool()` in `app/mcp_server.py` and restart. The agent discovers it automatically.
 - **Debug the MCP server alone:** `npx @modelcontextprotocol/inspector python -m app.mcp_server`

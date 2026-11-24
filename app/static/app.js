@@ -1,4 +1,4 @@
-/* Kyte Voice Agent - browser client.
+/* AI Voice Agent - browser client.
    Mic -> VAD -> 16 kHz WAV -> /api/stt -> /api/chat -> speechSynthesis (TTS). */
 (() => {
   const $ = (id) => document.getElementById(id);

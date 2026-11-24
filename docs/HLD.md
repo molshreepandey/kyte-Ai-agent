@@ -16,7 +16,7 @@ flowchart TD
 
     subgraph RAG["RAG pipeline"]
         direction TB
-        KB[("knowledge_base/*.md<br/>FAQ + product specs")] -->|"chunk by section"| EMB["Embeddings<br/>OpenRouter, local TF-IDF fallback"]
+        KB[("knowledge_base/*.md<br/>FAQ + product specs<br/>(sample: Demo Wallet)")] -->|"chunk by section"| EMB["Embeddings<br/>OpenRouter, local TF-IDF fallback"]
         EMB --> VS[("Vector store<br/>numpy + cosine similarity")]
         VS --> TOPK["Top-k chunks"]
     end

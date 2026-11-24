@@ -35,7 +35,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await agent.stop()
 
 
-app = FastAPI(title="Kyte Voice Agent", lifespan=lifespan)
+app = FastAPI(title="AI Voice Agent", lifespan=lifespan)
 
 
 class ChatIn(BaseModel):
@@ -105,5 +105,5 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    print(f"Kyte Voice Agent -> http://{config.HOST}:{config.PORT}")
+    print(f"AI Voice Agent -> http://{config.HOST}:{config.PORT}")
     run()

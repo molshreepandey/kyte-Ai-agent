@@ -31,38 +31,45 @@ from .rag import VectorStore
 
 log = logging.getLogger("agent")
 
-SYSTEM_PROMPT = (
-    "You are Kyte, a friendly voice assistant for Kyte Money, a digital money-management app.\n"
-    "Your replies are spoken aloud, so:\n"
-    "- Answer in one to three short, natural sentences. No markdown, bullets, emojis or URLs.\n"
-    "- Say numbers the way a person would speak them.\n"
-    "\n"
-    "Tool use:\n"
-    "- For ANY question about Kyte Money (plans, fees, limits, cards, savings, support, security, "
-    "how-tos), call search_knowledge_base and answer ONLY from what it returns. If it does not "
-    "contain the answer, say you don't have that information.\n"
-    "- For current time/date, weather, arithmetic, system info or app logs, call the matching "
-    "system tool. Never guess these or do maths in your head.\n"
-    "- If a question needs both (e.g. a fee from the knowledge base applied to an amount), call the "
-    "knowledge base first, then the calculator.\n"
-    "- For greetings or small talk, answer directly without tools."
-)
-
 RAG_NAME = "search_knowledge_base"
-RAG_TOOL: ChatCompletionToolParam = {
-    "type": "function",
-    "function": {
-        "name": RAG_NAME,
-        "description": "Semantic search over the Kyte Money knowledge base (FAQs and product "
-        "specifications). Use for any question about Kyte plans, fees, limits, cards, savings, bills, "
-        "security or support.",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string", "description": "Self-contained search query."}},
-            "required": ["query"],
+
+
+def build_system_prompt(
+    company_name: str, company_description: str, kb_topics: str, agent_name: str = ""
+) -> str:
+    """The voice persona. Business details come from configuration, not code."""
+    who = f"You are {agent_name}, a friendly" if agent_name else "You are a friendly"
+    return (
+        f"{who} voice assistant for {company_name}, {company_description}.\n"
+        "Your replies are spoken aloud, so:\n"
+        "- Answer in one to three short, natural sentences. No markdown, bullets, emojis or URLs.\n"
+        "- Say numbers the way a person would speak them.\n"
+        "\n"
+        "Tool use:\n"
+        f"- For ANY question about {company_name} ({kb_topics}), call {RAG_NAME} and answer ONLY "
+        "from what it returns. If it does not contain the answer, say you don't have that information.\n"
+        "- For current time/date, weather, arithmetic, system info or app logs, call the matching "
+        "system tool. Never guess these or do maths in your head.\n"
+        "- If a question needs both (e.g. a fee from the knowledge base applied to an amount), call the "
+        "knowledge base first, then the calculator.\n"
+        "- For greetings or small talk, answer directly without tools."
+    )
+
+
+def build_rag_tool(company_name: str, kb_topics: str) -> ChatCompletionToolParam:
+    return {
+        "type": "function",
+        "function": {
+            "name": RAG_NAME,
+            "description": f"Semantic search over the {company_name} knowledge base (FAQs and product "
+            f"specifications). Use for any question about {company_name}: {kb_topics}.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Self-contained search query."}},
+                "required": ["query"],
+            },
         },
-    },
-}
+    }
 
 
 class Agent:
@@ -71,6 +78,10 @@ class Agent:
             api_key=config.OPENROUTER_API_KEY or "missing", base_url=config.OPENROUTER_BASE_URL
         )
         self.store = VectorStore()
+        self.system_prompt = build_system_prompt(
+            config.COMPANY_NAME, config.COMPANY_DESCRIPTION, config.KB_TOPICS, config.AGENT_NAME
+        )
+        self.rag_tool = build_rag_tool(config.COMPANY_NAME, config.KB_TOPICS)
         self.mcp_tools: list[ChatCompletionToolParam] = []
         self.sessions: dict[str, list[ChatCompletionMessageParam]] = {}
         self._stack = AsyncExitStack()
@@ -171,10 +182,10 @@ class Agent:
         history = self.sessions.setdefault(session_id, [])
         history.append({"role": "user", "content": user_text})
         messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             *history[-20:],
         ]
-        tools = [RAG_TOOL, *self.mcp_tools]
+        tools = [self.rag_tool, *self.mcp_tools]
         steps: list[dict[str, Any]] = []
         t0 = time.perf_counter()
 

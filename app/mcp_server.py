@@ -21,7 +21,7 @@ from mcp.server.fastmcp import FastMCP
 
 LOG_FILE = Path(__file__).resolve().parent.parent / "logs" / "agent.log"
 
-mcp = FastMCP("kyte-system-tools")
+mcp = FastMCP("voice-agent-tools")
 
 
 # ------------------------------------------------------------------ time

@@ -18,6 +18,15 @@ STT_MODEL = os.getenv("STT_MODEL", "google/gemini-2.5-flash")
 STT_MODE = os.getenv("STT_MODE", "browser").strip().lower()
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
 
+# Persona / business the assistant represents. Defaults describe the fictional sample
+# knowledge base shipped in knowledge_base/ ("Demo Wallet").
+AGENT_NAME = os.getenv("AGENT_NAME", "").strip()
+COMPANY_NAME = os.getenv("COMPANY_NAME", "Demo Wallet").strip()
+COMPANY_DESCRIPTION = os.getenv("COMPANY_DESCRIPTION", "a digital money-management app").strip()
+KB_TOPICS = os.getenv(
+    "KB_TOPICS", "plans, fees, limits, cards, savings, bills, support, security and how-tos"
+).strip()
+
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
 
