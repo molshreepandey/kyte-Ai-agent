@@ -1,4 +1,5 @@
 """Central configuration, loaded from environment / .env."""
+
 import os
 from pathlib import Path
 

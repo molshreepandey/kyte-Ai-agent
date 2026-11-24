@@ -1,6 +1,6 @@
 # Kyte Voice Agent
 
-A voice-activated AI agent that answers by combining **RAG** (knowledge retrieval) and **MCP** (real-time tool execution), with a "phone call" web UI. Built in Python; the LLM, speech-to-text and embeddings all go through [OpenRouter](https://openrouter.ai).
+A voice-activated AI agent that answers by combining **RAG** (knowledge retrieval) and **MCP** (real-time tool execution), with a "phone call" web UI. Built in Python; the LLM and embeddings go through [OpenRouter](https://openrouter.ai). Speech-to-text uses the browser's Web Speech API by default, or an audio-capable OpenRouter model when `STT_MODE=openrouter`.
 
 **Pipeline:** mic audio → STT → LLM decides (RAG and/or MCP tool) → tool result → LLM answer → TTS
 
@@ -22,7 +22,7 @@ flowchart LR
 
 ## Prerequisites
 
-- Python 3.10+ (developed on 3.15)
+- Python 3.12+ (on Apple Silicon, use a native arm64 Python; an x86_64/Rosetta build cannot compile the `cryptography` dependency)
 - An OpenRouter API key: https://openrouter.ai/keys (some credit is needed for the paid models)
 - **Chrome or Edge** for the UI (microphone + speech synthesis). Allow microphone access when asked.
 
@@ -63,7 +63,7 @@ On startup the app builds the vector index (cached in `data/`), launches the MCP
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `OPENROUTER_API_KEY` | yes | none | OpenRouter key for LLM, STT and embeddings |
-| `LLM_MODEL` | no | `openai/gpt-4o-mini` | Chat model; must support tool calling |
+| `LLM_MODEL` | no | `openai/gpt-4o-mini` | Chat model, or a comma-separated fallback list tried in order; must support tool calling |
 | `STT_MODE` | no | `browser` | `browser` = free Web Speech API (Chrome/Edge); `openrouter` = audio model via OpenRouter (needs >= $0.50 credit) |
 | `STT_MODEL` | no | `google/gemini-2.5-flash` | Audio-input model used for transcription |
 | `EMBEDDING_MODEL` | no | `openai/text-embedding-3-small` | RAG embeddings (falls back to local TF-IDF if unavailable) |
@@ -99,13 +99,28 @@ tests/             Offline tests (no API key needed)
 - **Add a tool:** add a function decorated with `@mcp.tool()` in `app/mcp_server.py` and restart. The agent discovers it automatically.
 - **Debug the MCP server alone:** `npx @modelcontextprotocol/inspector python -m app.mcp_server`
 
-## Tests
+## Development
 
 ```bash
-python -m pytest -q tests
+pip install -r requirements-dev.txt   # production deps + pytest, ruff, mypy
+
+ruff check .            # lint
+ruff format .           # format
+mypy                    # type-check (strict)
+pytest                  # backend tests
 ```
 
-The tests need no API key. They cover calculator safety, RAG retrieval ranking, and the agent routing loop (scripted LLM, real MCP server over stdio).
+Browser tests (Playwright, needs Node 20+):
+
+```bash
+npm ci
+npx playwright install chromium
+npx playwright test     # starts the server itself; LLM calls are stubbed
+```
+
+No test needs an API key or network access. The backend suite covers calculator safety, RAG retrieval ranking, the agent routing loop (scripted LLM, real MCP server over stdio) and the HTTP API. CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull request.
+
+`requirements.txt` pins exact production versions; `requirements-dev.txt` adds the tooling. Upgrade by editing a pin and re-running the full suite.
 
 ## Troubleshooting
 

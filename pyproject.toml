@@ -1,0 +1,63 @@
+[project]
+name = "ai-voice-agent"
+version = "0.2.0"
+description = "AI Voice Agent: a voice-first assistant combining LLM tool routing, RAG and MCP tools."
+readme = "README.md"
+requires-python = ">=3.12"
+# Compatible ranges for library consumers; exact pins live in requirements.txt.
+dependencies = [
+    "fastapi~=0.165",
+    "uvicorn~=0.54",
+    "mcp>=1.30,<2",
+    "openai~=3.58",
+    "numpy~=2.5",
+    "python-dotenv~=1.2",
+    "python-multipart~=0.0.34",
+    "httpx~=0.28",
+    "tzdata>=2026.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest~=9.2", "pytest-asyncio~=1.5", "ruff~=0.17", "mypy~=2.4"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+extend-exclude = [".venv", "node_modules"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",   # pycodestyle / pyflakes
+    "I",             # isort
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "S",             # bandit (security)
+    "ASYNC",         # blocking calls in async code
+    "SIM",           # simplifications
+    "RUF",           # ruff-specific
+    "BLE",           # blind `except Exception`
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S603", "BLE001"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["app", "tests"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+asyncio_default_fixture_loop_scope = "function"

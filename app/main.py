@@ -1,8 +1,11 @@
 """FastAPI server: serves the web UI and the voice/chat API."""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated, Any
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -17,8 +20,7 @@ config.LOG_DIR.mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[logging.FileHandler(config.LOG_DIR / "agent.log", encoding="utf-8"),
-              logging.StreamHandler()],
+    handlers=[logging.FileHandler(config.LOG_DIR / "agent.log", encoding="utf-8"), logging.StreamHandler()],
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("api")
@@ -27,7 +29,7 @@ agent = Agent()
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await agent.start()
     yield
     await agent.stop()
@@ -47,7 +49,7 @@ def _require_key() -> None:
 
 
 @app.get("/api/status")
-async def status():
+async def status() -> dict[str, Any]:
     return {
         "ready": bool(config.OPENROUTER_API_KEY),
         "llm_model": config.LLM_MODEL,
@@ -60,38 +62,38 @@ async def status():
 
 
 @app.post("/api/stt")
-async def stt(audio: UploadFile = File(...)):
+async def stt(audio: Annotated[UploadFile, File()]) -> dict[str, str]:
     _require_key()
     data = await audio.read()
     if len(data) < 2000:
         return {"text": ""}
     try:
         return {"text": await agent.transcribe(data)}
-    except Exception as exc:
+    except Exception as exc:  # sanitised in Phase 2
         log.error("STT failed: %s", exc)
-        raise HTTPException(502, f"Speech-to-text failed: {exc}")
+        raise HTTPException(502, f"Speech-to-text failed: {exc}") from exc
 
 
 @app.post("/api/chat")
-async def chat(body: ChatIn):
+async def chat(body: ChatIn) -> dict[str, Any]:
     _require_key()
     if not body.text.strip():
         raise HTTPException(400, "Empty message")
     try:
         return await agent.chat(body.session_id, body.text.strip())
-    except Exception as exc:
+    except Exception as exc:  # sanitised in Phase 2
         log.exception("chat failed")
-        raise HTTPException(502, f"LLM request failed: {exc}")
+        raise HTTPException(502, f"LLM request failed: {exc}") from exc
 
 
 @app.post("/api/reset")
-async def reset(session_id: str = Form("default")):
+async def reset(session_id: Annotated[str, Form()] = "default") -> dict[str, bool]:
     agent.reset(session_id)
     return {"ok": True}
 
 
 @app.get("/")
-async def index():
+async def index() -> FileResponse:
     return FileResponse(config.STATIC_DIR / "index.html")
 
 

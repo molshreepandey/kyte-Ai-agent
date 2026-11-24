@@ -1,11 +1,36 @@
+# --- secrets / local config
 .env
 .env.*
 !.env.example
+
+# --- Python
 .venv/
 venv/
 __pycache__/
-*.pyc
-.DS_Store
+*.py[cod]
+*.egg-info/
+build/
+dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- generated runtime data (rebuilt automatically at startup)
+data/
 logs/
+*.db
+*.sqlite3
+
+# --- Node / frontend tests
+node_modules/
+playwright-report/
+test-results/
+blob-report/
+
+# --- editors / OS
+.DS_Store
 .vscode/
+.idea/

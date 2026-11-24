@@ -4,15 +4,18 @@ Embeddings come from OpenRouter. If the embeddings endpoint is unavailable the
 store transparently falls back to a local hashing embedder, so retrieval still
 works offline (lower quality, but deterministic and dependency-free).
 """
+
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from openai import OpenAI
@@ -22,11 +25,34 @@ from . import config
 log = logging.getLogger("rag")
 
 LOCAL_DIM = 768
-INDEX_VERSION = 2   # bump when chunking / local embedding changes to invalidate cached indexes
+INDEX_VERSION = 2  # bump when chunking / local embedding changes to invalidate cached indexes
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _STOP = {
-    "the", "a", "an", "is", "are", "of", "to", "and", "or", "in", "on", "for", "do",
-    "i", "my", "me", "how", "what", "can", "does", "it", "at", "be", "with", "by",
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "of",
+    "to",
+    "and",
+    "or",
+    "in",
+    "on",
+    "for",
+    "do",
+    "i",
+    "my",
+    "me",
+    "how",
+    "what",
+    "can",
+    "does",
+    "it",
+    "at",
+    "be",
+    "with",
+    "by",
 }
 
 
@@ -56,7 +82,7 @@ def load_chunks(kb_dir: Path) -> list[Chunk]:
             else:
                 h1 = re.match(r"# (.+)", part)
                 title = h1.group(1).strip() if h1 else doc_title
-                if len(part.split()) < 25:   # bare document header, no content
+                if len(part.split()) < 25:  # bare document header, no content
                     doc_title = title
                     continue
             chunks.append(Chunk(text=part, source=path.name, title=title))
@@ -73,7 +99,7 @@ def _stem(w: str) -> str:
 
 def _grams(text: str) -> list[str]:
     toks = [_stem(w) for w in _TOKEN_RE.findall(text.lower()) if w not in _STOP]
-    return toks + [f"{a}_{b}" for a, b in zip(toks, toks[1:])]
+    return toks + [f"{a}_{b}" for a, b in itertools.pairwise(toks)]
 
 
 def _fit_idf(texts: list[str]) -> dict[str, float]:
@@ -90,7 +116,7 @@ def _local_embed(texts: list[str], idf: dict[str, float]) -> np.ndarray:
     out = np.zeros((len(texts), LOCAL_DIM), dtype=np.float32)
     for i, t in enumerate(texts):
         for g in _grams(t):
-            h = int.from_bytes(hashlib.md5(g.encode()).digest()[:8], "little")
+            h = int.from_bytes(hashlib.md5(g.encode(), usedforsecurity=False).digest()[:8], "little")
             out[i, h % LOCAL_DIM] += idf.get(g, 1.0)
     return out
 
@@ -98,7 +124,8 @@ def _local_embed(texts: list[str], idf: dict[str, float]) -> np.ndarray:
 def _normalise(m: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(m, axis=1, keepdims=True)
     n[n == 0] = 1
-    return m / n
+    out: np.ndarray = m / n
+    return out
 
 
 class VectorStore:
@@ -147,7 +174,11 @@ class VectorStore:
         if not force and self.index_path.exists() and self.meta_path.exists():
             meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
             wanted = config.EMBEDDING_MODEL if self._client else "local"
-            if meta.get("version") == INDEX_VERSION and meta["fingerprint"] == fp and meta["embedder"] in (wanted, "local"):
+            if (
+                meta.get("version") == INDEX_VERSION
+                and meta["fingerprint"] == fp
+                and meta["embedder"] in (wanted, "local")
+            ):
                 self.matrix = np.load(self.index_path)["m"]
                 self.chunks = chunks
                 self.embedder = meta["embedder"]
@@ -159,7 +190,7 @@ class VectorStore:
         try:
             matrix = self._embed(texts, "remote")
             self.embedder = config.EMBEDDING_MODEL
-        except Exception as exc:  # no key / endpoint down / model unsupported
+        except Exception as exc:  # noqa: BLE001 - narrowed in Phase 5 (async RAG)
             log.warning("Remote embeddings unavailable (%s); using local embedder", exc)
             matrix = self._embed(texts, "local")
             self.embedder, backend = "local", "local"
@@ -167,18 +198,19 @@ class VectorStore:
         self.chunks, self.matrix = chunks, matrix
         np.savez_compressed(self.index_path, m=matrix)
         self.meta_path.write_text(
-            json.dumps({"fingerprint": fp, "embedder": self.embedder, "version": INDEX_VERSION}), encoding="utf-8"
+            json.dumps({"fingerprint": fp, "embedder": self.embedder, "version": INDEX_VERSION}),
+            encoding="utf-8",
         )
         log.info("Built index: %d chunks via %s", len(chunks), backend)
 
     # ---- query
-    def search(self, query: str, k: int = 3) -> list[dict]:
+    def search(self, query: str, k: int = 3) -> list[dict[str, Any]]:
         if not self.chunks:
             self.build()
         backend = "local" if self.embedder == "local" else "remote"
         try:
             q = self._embed([query], backend)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - replaced in Phase 5 (no index rebuild)
             log.warning("Query embedding failed (%s); rebuilding with local embedder", exc)
             texts = [f"{c.title}\n{c.text}" for c in self.chunks]
             self.matrix, self.embedder = self._embed(texts, "local"), "local"
