@@ -1,0 +1,7 @@
+# Normalise line endings: LF in the repository and working tree on every OS
+# (the project previously mixed CRLF and LF files).
+* text=auto eol=lf
+
+*.npz binary
+*.png binary
+*.ico binary
