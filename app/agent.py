@@ -9,6 +9,7 @@ to, or executable by, the LLM.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -33,7 +34,7 @@ from openai.types.chat import (
     ChatCompletionToolParam,
 )
 
-from . import config
+from .config import ROOT, Settings
 from .errors import LLMUnavailableError, SpeechToTextError
 from .rag import VectorStore
 
@@ -81,6 +82,7 @@ def build_rag_tool(company_name: str, kb_topics: str) -> ChatCompletionToolParam
 
 
 MAX_TOOL_NAME_CHARS = 64
+MCP_PING_TIMEOUT_SECONDS = 2.0
 
 
 class ToolNotAllowedError(Exception):
@@ -120,17 +122,28 @@ def _tool_error_message(exc: BaseException) -> str:
 
 
 class Agent:
-    def __init__(self) -> None:
+    """One instance per application. Construction is side-effect free; `start()`
+    builds the knowledge index and launches the MCP server subprocess."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        api_key = settings.openrouter_api_key.get_secret_value()
         self.llm = AsyncOpenAI(
-            api_key=config.OPENROUTER_API_KEY or "missing",
-            base_url=config.OPENROUTER_BASE_URL,
-            timeout=config.LLM_TIMEOUT_SECONDS,
+            api_key=api_key or "missing",
+            base_url=settings.openrouter_base_url,
+            timeout=settings.llm_timeout_seconds,
         )
-        self.store = VectorStore()
+        self.store = VectorStore(
+            settings.kb_dir,
+            settings.data_dir,
+            api_key=api_key,
+            base_url=settings.openrouter_base_url,
+            embedding_model=settings.embedding_model,
+        )
         self.system_prompt = build_system_prompt(
-            config.COMPANY_NAME, config.COMPANY_DESCRIPTION, config.KB_TOPICS, config.AGENT_NAME
+            settings.company_name, settings.company_description, settings.kb_topics, settings.agent_name
         )
-        self.rag_tool = build_rag_tool(config.COMPANY_NAME, config.KB_TOPICS)
+        self.rag_tool = build_rag_tool(settings.company_name, settings.kb_topics)
         self.mcp_tools: list[ChatCompletionToolParam] = []
         self.sessions: dict[str, list[ChatCompletionMessageParam]] = {}
         self._stack = AsyncExitStack()
@@ -139,14 +152,12 @@ class Agent:
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         self.store.build()
-        params = StdioServerParameters(
-            command=sys.executable, args=["-m", "app.mcp_server"], cwd=str(config.ROOT)
-        )
+        params = StdioServerParameters(command=sys.executable, args=["-m", "app.mcp_server"], cwd=str(ROOT))
         read, write = await self._stack.enter_async_context(stdio_client(params))
         self._mcp = await self._stack.enter_async_context(ClientSession(read, write))
         await self._mcp.initialize()
         listed = await self._mcp.list_tools()
-        allowed = set(config.MCP_TOOL_ALLOWLIST)
+        allowed = set(self.settings.tool_allowlist)
         self.mcp_tools = [
             {
                 "type": "function",
@@ -165,6 +176,17 @@ class Agent:
 
     async def stop(self) -> None:
         await self._stack.aclose()
+        self._mcp = None
+
+    async def ping_mcp(self) -> bool:
+        """True if the MCP server answers a ping in time (used by the readiness check)."""
+        if self._mcp is None:
+            return False
+        try:
+            await asyncio.wait_for(self._mcp.send_ping(), MCP_PING_TIMEOUT_SECONDS)
+        except (McpError, TimeoutError, anyio.ClosedResourceError, anyio.BrokenResourceError):
+            return False
+        return True
 
     @property
     def tool_names(self) -> list[dict[str, str]]:
@@ -184,7 +206,7 @@ class Agent:
         if not resp.choices:
             raise SpeechToTextError()
         text = (resp.choices[0].message.content or "").strip().strip('"')
-        if config.LOG_TRANSCRIPTS:
+        if self.settings.log_transcripts:
             log.info("STT: %r", text)
         else:
             log.info("STT: %d characters", len(text))
@@ -192,7 +214,7 @@ class Agent:
 
     async def _transcribe_request(self, b64: str) -> ChatCompletion:
         return await self.llm.chat.completions.create(
-            model=config.STT_MODEL,
+            model=self.settings.stt_model,
             temperature=0,
             max_tokens=300,
             messages=[
@@ -223,7 +245,7 @@ class Agent:
         if self._mcp is None:
             raise ToolUnavailableError("MCP session is not connected")
         result = await self._mcp.call_tool(
-            name, args, read_timeout_seconds=timedelta(seconds=config.TOOL_TIMEOUT_SECONDS)
+            name, args, read_timeout_seconds=timedelta(seconds=self.settings.tool_timeout_seconds)
         )
         return "\n".join(c.text for c in result.content if isinstance(c, TextContent) and c.text) or (
             "(no output)"
@@ -237,7 +259,7 @@ class Agent:
         Raises LLMUnavailableError when every model fails.
         """
         last: Exception | None = None
-        for model in config.LLM_MODELS:
+        for model in self.settings.llm_models:
             try:
                 resp = await self.llm.chat.completions.create(
                     model=model,
@@ -270,7 +292,7 @@ class Agent:
         def elapsed() -> int:
             return int((time.perf_counter() - t0) * 1000)
 
-        for _ in range(config.MAX_TOOL_ROUNDS):
+        for _ in range(self.settings.max_tool_rounds):
             msg = await self._complete(messages, tools)
             # Only function tools are offered, so other call types (custom tools) are ignored.
             calls = [c for c in msg.tool_calls or [] if isinstance(c, ChatCompletionMessageFunctionToolCall)]
@@ -303,7 +325,7 @@ class Agent:
                     output = _tool_error_message(exc)
                     log.warning("Tool %s failed: %s", name, type(exc).__name__)
                 kind = "rag" if name == RAG_NAME else "mcp"
-                if config.LOG_TRANSCRIPTS:
+                if self.settings.log_transcripts:
                     log.info("Route -> %s tool=%s args=%s", kind.upper(), name, args)
                 else:
                     log.info("Route -> %s tool=%s", kind.upper(), name)

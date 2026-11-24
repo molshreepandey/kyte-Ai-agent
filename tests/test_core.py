@@ -5,11 +5,10 @@ import asyncio
 
 import pytest
 
-from app import config
 from app.agent import Agent
 from app.mcp_server import calculate, get_current_time
 from app.rag import VectorStore
-from tests.conftest import ScriptedLLM, answer, calls, tool_call
+from tests.conftest import ScriptedLLM, answer, calls, make_settings, offline_agent, tool_call
 
 
 def test_calculator():
@@ -27,9 +26,9 @@ def test_time_tool():
 
 
 @pytest.fixture()
-def store(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
-    s = VectorStore(data_dir=tmp_path)
+def store(tmp_path):
+    settings = make_settings(tmp_path)
+    s = VectorStore(settings.kb_dir, settings.data_dir)
     s.build()
     return s
 
@@ -47,9 +46,8 @@ def test_rag_retrieval(store, query, expected):
     assert store.search(query, k=2)[0]["title"] == expected
 
 
-def test_agent_routes_rag_then_mcp(tmp_path, monkeypatch):
+def test_agent_routes_rag_then_mcp(tmp_path):
     """The 'both' scenario: KB lookup -> calculator -> final answer."""
-    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
     llm = ScriptedLLM(
         calls(tool_call("1", "search_knowledge_base", {"query": "international fee premium"})),
         calls(tool_call("2", "calculate", {"expression": "2500 * 0.004"})),
@@ -57,8 +55,7 @@ def test_agent_routes_rag_then_mcp(tmp_path, monkeypatch):
     )
 
     async def run():
-        agent = Agent()
-        agent.store = VectorStore(data_dir=tmp_path)
+        agent: Agent = offline_agent(make_settings(tmp_path))
         await agent.start()
         try:
             assert "calculate" in [t["name"] for t in agent.tool_names]

@@ -1,41 +1,36 @@
-"""HTTP API tests against the real FastAPI app, real MCP subprocess and real vector store.
+"""HTTP API tests against the real app factory, real MCP subprocess and real vector store.
 
-The LLM is replaced by `ScriptedLLM`, so no network access or API key is needed.
+The LLM is replaced by `ScriptedLLM`, so no network access is needed.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config
-from app.rag import VectorStore
-from app.ratelimit import InMemoryRateLimiter
-from tests.conftest import ScriptedLLM, answer, calls, connection_error, make_wav, tool_call
+from app.main import create_app
+from tests.conftest import (
+    ScriptedLLM,
+    answer,
+    app_agent,
+    calls,
+    connection_error,
+    make_settings,
+    make_wav,
+    offline_agent,
+    override_settings,
+    tool_call,
+)
 
 
 @pytest.fixture(scope="module")
-def api(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[TestClient, Any]]:
-    from app import main
-
-    # Build the index into a temp dir with no key, so no embedding request leaves the machine.
-    saved_key = config.OPENROUTER_API_KEY
-    config.OPENROUTER_API_KEY = ""
-    main.agent.store = VectorStore(data_dir=tmp_path_factory.mktemp("data"))
-    # Generous limits so this module's many requests are not throttled (limits are tested separately).
-    main.limiter = InMemoryRateLimiter(per_minute=100_000, burst=100_000)
-    with TestClient(main.app) as client:
-        yield client, main
-    config.OPENROUTER_API_KEY = saved_key
-
-
-@pytest.fixture()
-def with_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "test-key")
+def client(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TestClient]:
+    settings = make_settings(tmp_path_factory.mktemp("api"), openrouter_api_key="test-key")
+    with TestClient(create_app(settings, agent_factory=offline_agent)) as c:
+        yield c
 
 
 def _sid() -> str:
@@ -43,11 +38,11 @@ def _sid() -> str:
 
 
 # ------------------------------------------------------------------ status / static
-def test_status_reports_pipeline(api: tuple[TestClient, Any]) -> None:
-    client, _ = api
+def test_status_reports_pipeline(client: TestClient) -> None:
     r = client.get("/api/status")
     assert r.status_code == 200
     body = r.json()
+    assert body["ready"] is True
     assert body["chunks"] > 0
     assert body["embedder"] == "local"
     names = {t["name"]: t["kind"] for t in body["tools"]}
@@ -55,8 +50,7 @@ def test_status_reports_pipeline(api: tuple[TestClient, Any]) -> None:
     assert names["calculate"] == "mcp"
 
 
-def test_index_and_static_assets_served(api: tuple[TestClient, Any]) -> None:
-    client, _ = api
+def test_index_and_static_assets_served(client: TestClient) -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert '<canvas id="wave"' in r.text
@@ -65,24 +59,22 @@ def test_index_and_static_assets_served(api: tuple[TestClient, Any]) -> None:
 
 
 # ------------------------------------------------------------------------- chat
-def test_chat_requires_api_key(api: tuple[TestClient, Any]) -> None:
-    client, _ = api
-    r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
+def test_chat_requires_api_key(client: TestClient) -> None:
+    with override_settings(client, openrouter_api_key=""):
+        r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "not_configured"
     assert "OPENROUTER" not in r.text  # configuration details are for operators, not customers
 
 
-def test_chat_rejects_blank_text(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, _ = api
+def test_chat_rejects_blank_text(client: TestClient) -> None:
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "   "})
     assert r.status_code == 422
     assert r.json()["error"]["details"][0]["field"] == "body.text"
 
 
-def test_chat_direct_answer(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, main = api
-    main.agent.llm = ScriptedLLM(answer("Hello there."))
+def test_chat_direct_answer(client: TestClient) -> None:
+    app_agent(client).llm = ScriptedLLM(answer("Hello there."))  # type: ignore[assignment]
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
     assert r.status_code == 200
     body = r.json()
@@ -92,9 +84,8 @@ def test_chat_direct_answer(api: tuple[TestClient, Any], with_key: None) -> None
     assert isinstance(body["latency_ms"], int)
 
 
-def test_chat_mcp_tool_route(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, main = api
-    main.agent.llm = ScriptedLLM(
+def test_chat_mcp_tool_route(client: TestClient) -> None:
+    app_agent(client).llm = ScriptedLLM(  # type: ignore[assignment]
         calls(tool_call("c1", "calculate", {"expression": "6 * 7"})),
         answer("Forty two."),
     )
@@ -105,11 +96,10 @@ def test_chat_mcp_tool_route(api: tuple[TestClient, Any], with_key: None) -> Non
     assert steps[0]["output"].endswith("= 42")
 
 
-def test_chat_history_is_per_session(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, main = api
+def test_chat_history_is_per_session(client: TestClient) -> None:
     a, b = _sid(), _sid()
     llm = ScriptedLLM(answer("one"), answer("two"), answer("three"))
-    main.agent.llm = llm
+    app_agent(client).llm = llm  # type: ignore[assignment]
     client.post("/api/chat", json={"session_id": a, "text": "first from A"})
     client.post("/api/chat", json={"session_id": a, "text": "second from A"})
     client.post("/api/chat", json={"session_id": b, "text": "first from B"})
@@ -118,11 +108,10 @@ def test_chat_history_is_per_session(api: tuple[TestClient, Any], with_key: None
     assert "first from A" not in contents[2]  # B never sees A's history
 
 
-def test_reset_clears_history(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, main = api
+def test_reset_clears_history(client: TestClient) -> None:
     sid = _sid()
     llm = ScriptedLLM(answer("one"), answer("two"))
-    main.agent.llm = llm
+    app_agent(client).llm = llm  # type: ignore[assignment]
     client.post("/api/chat", json={"session_id": sid, "text": "remember me"})
     r = client.post("/api/reset", data={"session_id": sid})
     assert r.status_code == 200
@@ -131,17 +120,25 @@ def test_reset_clears_history(api: tuple[TestClient, Any], with_key: None) -> No
     assert "remember me" not in [m.get("content") for m in llm.requests[1]["messages"]]
 
 
-def test_chat_llm_failure_returns_502(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, main = api
-    main.agent.llm = ScriptedLLM(*[connection_error()] * len(config.LLM_MODELS))
+def test_chat_llm_failure_returns_502(client: TestClient) -> None:
+    agent = app_agent(client)
+    agent.llm = ScriptedLLM(*[connection_error()] * len(agent.settings.llm_models))  # type: ignore[assignment]
     r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
     assert r.status_code == 502
     assert r.json()["error"]["code"] == "llm_unavailable"
 
 
-def test_chat_tool_failure_is_reported_not_raised(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, main = api
-    main.agent.llm = ScriptedLLM(
+def test_chat_falls_back_to_next_model(client: TestClient) -> None:
+    with override_settings(client, llm_model="primary/model,backup/model"):
+        llm = ScriptedLLM(connection_error(), answer("from backup"))
+        app_agent(client).llm = llm  # type: ignore[assignment]
+        r = client.post("/api/chat", json={"session_id": _sid(), "text": "hi"})
+    assert r.json()["answer"] == "from backup"
+    assert [req["model"] for req in llm.requests] == ["primary/model", "backup/model"]
+
+
+def test_chat_tool_failure_is_reported_not_raised(client: TestClient) -> None:
+    app_agent(client).llm = ScriptedLLM(  # type: ignore[assignment]
         calls(tool_call("c1", "no_such_tool", {})),
         answer("Sorry, that did not work."),
     )
@@ -152,23 +149,21 @@ def test_chat_tool_failure_is_reported_not_raised(api: tuple[TestClient, Any], w
 
 
 # -------------------------------------------------------------------------- stt
-def test_stt_requires_api_key(api: tuple[TestClient, Any]) -> None:
-    client, _ = api
-    r = client.post("/api/stt", files={"audio": ("a.wav", make_wav(), "audio/wav")})
+def test_stt_requires_api_key(client: TestClient) -> None:
+    with override_settings(client, openrouter_api_key=""):
+        r = client.post("/api/stt", files={"audio": ("a.wav", make_wav(), "audio/wav")})
     assert r.status_code == 503
 
 
-def test_stt_ignores_tiny_audio(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, _ = api
+def test_stt_ignores_tiny_audio(client: TestClient) -> None:
     r = client.post("/api/stt", files={"audio": ("a.wav", make_wav(seconds=0.01), "audio/wav")})
     assert r.status_code == 200
     assert r.json() == {"text": ""}
 
 
-def test_stt_transcribes(api: tuple[TestClient, Any], with_key: None) -> None:
-    client, main = api
+def test_stt_transcribes(client: TestClient) -> None:
     llm = ScriptedLLM(answer('"what time is it"'))
-    main.agent.llm = llm
+    app_agent(client).llm = llm  # type: ignore[assignment]
     r = client.post("/api/stt", files={"audio": ("a.wav", make_wav(), "audio/wav")})
     assert r.status_code == 200
     assert r.json() == {"text": "what time is it"}

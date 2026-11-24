@@ -52,11 +52,15 @@ cp .env.example .env && nano .env
 
 ```bash
 python -m app.main
+# or, with uvicorn options (workers, proxy headers, ...):
+uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
 Open **http://127.0.0.1:8000** and click **Start call**. Speak, pause, and the agent answers aloud. Click the orb while it speaks to interrupt it. Click **End call** to hang up.
 
-On startup the app builds the vector index (cached in `data/`), launches the MCP server as a subprocess, and lists the discovered tools in the UI.
+On startup the app validates its configuration (invalid settings stop it with a message naming each bad variable), builds the vector index (cached in `data/`), launches the MCP server as a subprocess, and lists the exposed tools in the UI. Importing the code has no side effects: all of this happens in `create_app()` and the FastAPI lifespan.
+
+For production set `ENVIRONMENT=production` (requires `OPENROUTER_API_KEY`, disables the interactive docs, switches logs to JSON) and point your load balancer's health checks at `/health/live` and `/health/ready`.
 
 ## Environment variables
 
@@ -79,6 +83,9 @@ On startup the app builds the vector index (cached in `data/`), launches the MCP
 | `MAX_TEXT_CHARS` | no | `2000` | Maximum chat message length |
 | `MAX_AUDIO_BYTES` | no | `2000000` | Maximum STT upload size (about 60 s of 16 kHz audio) |
 | `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_BURST` | no | `30` / `10` | Per-client-IP (and per-session) token bucket for `/api/*` and `/admin/*` |
+| `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
+| `LOG_FORMAT` | no | `text` (dev) / `json` (prod) | `json` = one object per line with `request_id` and `session_id` |
+| `LOG_FILE` | no | (none) | Also write logs to this rotating file (10 MB x 5) |
 | `LOG_TRANSCRIPTS` | no | `false` | Log user transcripts and tool arguments (debugging only; this is user data) |
 | `HOST` / `PORT` | no | `127.0.0.1` / `8000` | Server bind address |
 
@@ -95,15 +102,23 @@ On startup the app builds the vector index (cached in `data/`), launches the MCP
 
 ```
 app/
-  main.py          FastAPI server and API routes
-  agent.py         Orchestrator: MCP client, LLM tool-calling loop, STT
-  rag.py           Chunking, embeddings, vector store, search
-  mcp_server.py    MCP server with the system tools
-  config.py        Environment config
-  static/          Web UI (index.html, style.css, app.js)
+  main.py            App factory (create_app), lifespan, middleware wiring, run()
+  api.py             Customer API routes and request/response models
+  health.py          Liveness / readiness probes
+  admin.py           Operator diagnostics (ADMIN_API_KEY)
+  agent.py           Orchestrator: MCP client, LLM tool-calling loop, STT
+  rag.py             Chunking, embeddings, vector store, search
+  mcp_server.py      MCP server with the customer-safe tools
+  config.py          Validated settings (pydantic-settings)
+  logging_config.py  Structured (JSON / text) logging with request context
+  security.py        Request IDs, access log, security headers, body limits, admin auth
+  errors.py          Error types and the single JSON error format
+  ratelimit.py       Token-bucket rate limiter
+  dependencies.py    FastAPI dependencies (per-app agent, settings, limiter)
+  static/            Web UI (index.html, style.css, app.js)
 knowledge_base/    Fictional "Demo Wallet" sample FAQ + product specs (replace with your own .md/.txt)
 docs/HLD.md        High-level design diagram + trade-offs
-tests/             Offline tests (no API key needed)
+tests/             Offline backend tests (no API key needed); tests/e2e/ browser tests
 ```
 
 ## API
@@ -115,6 +130,8 @@ tests/             Offline tests (no API key needed)
 | `POST` | `/api/stt` | multipart `audio` (16-bit PCM WAV) -> `{"text"}` |
 | `POST` | `/api/reset` | form `session_id` -> clears that conversation |
 | `GET` | `/admin/diagnostics` | Host and agent diagnostics. Requires `X-Admin-Key` |
+| `GET` | `/health/live` | Liveness: the process is serving requests |
+| `GET` | `/health/ready` | Readiness: index loaded, MCP tools reachable, LLM key configured (503 otherwise) |
 
 Interactive docs are at `/docs` in development. Every error uses one format, and internal exception details are never returned:
 
@@ -171,7 +188,7 @@ No test needs an API key or network access. The backend suite covers calculator 
 - **Mic button does nothing**: use Chrome/Edge on `localhost` and allow microphone permission. You can still type.
 - **No spoken reply**: check that the "Voice on" toggle is enabled and the system volume is up.
 - **"The assistant is not configured yet"** in the UI: the server has no `OPENROUTER_API_KEY`. The server log states the exact cause; customers only see the generic message.
-- Logs are written to stdout and `logs/agent.log`. User transcripts and tool arguments are not logged unless `LOG_TRANSCRIPTS=true`.
+- Logs go to stdout (readable text in development, JSON in production); set `LOG_FILE` for a rotating file. Every line carries the `request_id` returned to the client in `X-Request-ID`, so a user-reported error can be traced. User transcripts and tool arguments are not logged unless `LOG_TRANSCRIPTS=true`.
 
 ## Demo video outline (3-5 min)
 

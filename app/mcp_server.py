@@ -25,7 +25,8 @@ from mcp.server.fastmcp import FastMCP
 
 log = logging.getLogger("mcp_server")
 
-mcp = FastMCP("voice-agent-tools")
+# Per-request INFO lines from the MCP framework go to stderr unstructured; keep only warnings.
+mcp = FastMCP("voice-agent-tools", log_level="WARNING")
 
 
 # ------------------------------------------------------------------ time

@@ -41,7 +41,10 @@ flowchart TD
 | Layer | File | Responsibility |
 |---|---|---|
 | Voice UI | `app/static/*` | Call UI, mic capture, VAD, WAV encoding, TTS playback, routing trace |
-| API | `app/main.py` | `/api/stt`, `/api/chat`, `/api/status`, static files |
+| App factory | `app/main.py` | `create_app()`: lifespan (logging, folders, index, MCP), middleware, routers |
+| API | `app/api.py`, `app/health.py` | `/api/stt`, `/api/chat`, `/api/status`, `/api/reset`; `/health/live`, `/health/ready` |
+| Config | `app/config.py` | Validated settings from env / `.env`; fails fast on invalid values |
+| Logging | `app/logging_config.py` | JSON or text logs with request and session IDs |
 | Orchestrator | `app/agent.py` | MCP client, tool schema merge, LLM tool-calling loop, STT call |
 | RAG | `app/rag.py` | Chunking, embeddings, persistent vector store, cosine search |
 | MCP server | `app/mcp_server.py` | Customer-safe tools (time, bounded calculator, weather) over the Model Context Protocol |
@@ -59,3 +62,4 @@ flowchart TD
 7. **Voice-first prompt.** The system prompt forces short, markdown-free replies, which sound natural when spoken, and keeps latency down.
 8. **Safety.** The calculator parses with `ast` and a whitelist (no `eval`), and bounds expression length, AST size and integer size so no input can exhaust CPU or memory. The RAG prompt restricts answers to retrieved context to limit hallucination.
 9. **Least privilege for tools.** Every MCP tool is reachable by anonymous customers through the LLM, so only allowlisted, side-effect-free tools are exposed, each call has a timeout, and tool failures are returned as generic messages. Host diagnostics moved to an authenticated admin endpoint; the former log-reading tool was removed because logs contain other users' data.
+10. **Explicit startup, no import side effects.** `create_app(settings)` builds an isolated app; the lifespan configures logging, creates folders, builds the index and starts MCP. Tests build many independent apps from explicit settings, and the same factory runs under `uvicorn --factory`.

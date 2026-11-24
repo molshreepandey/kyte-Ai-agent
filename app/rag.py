@@ -20,8 +20,6 @@ from typing import Any
 import numpy as np
 from openai import OpenAI
 
-from . import config
-
 log = logging.getLogger("rag")
 
 LOCAL_DIM = 768
@@ -129,26 +127,39 @@ def _normalise(m: np.ndarray) -> np.ndarray:
 
 
 class VectorStore:
-    def __init__(self, kb_dir: Path = config.KB_DIR, data_dir: Path = config.DATA_DIR):
+    """Knowledge-base index. Construction has no side effects; `build()` reads the
+    documents, creates `data_dir` if needed and loads or (re)builds the cached index.
+
+    With an `api_key`, chunks are embedded remotely with `embedding_model`; without one
+    (or if that fails) the local TF-IDF embedder is used.
+    """
+
+    def __init__(
+        self,
+        kb_dir: Path,
+        data_dir: Path,
+        *,
+        api_key: str = "",
+        base_url: str = "https://openrouter.ai/api/v1",
+        embedding_model: str = "openai/text-embedding-3-small",
+    ) -> None:
         self.kb_dir = kb_dir
+        self.data_dir = data_dir
         self.index_path = data_dir / "vector_store.npz"
         self.meta_path = data_dir / "vector_store.json"
-        data_dir.mkdir(exist_ok=True)
+        self.embedding_model = embedding_model
         self.chunks: list[Chunk] = []
         self.matrix = np.zeros((0, 1), dtype=np.float32)
         self.embedder = "none"
         self._idf: dict[str, float] = {}
-        self._client = (
-            OpenAI(api_key=config.OPENROUTER_API_KEY, base_url=config.OPENROUTER_BASE_URL)
-            if config.OPENROUTER_API_KEY
-            else None
-        )
+        # Synchronous client: replaced by an async client in Phase 5.
+        self._client = OpenAI(api_key=api_key, base_url=base_url) if api_key else None
 
     # ---- embedding backends
     def _remote_embed(self, texts: list[str]) -> np.ndarray:
         if self._client is None:
             raise RuntimeError("no API key")
-        resp = self._client.embeddings.create(model=config.EMBEDDING_MODEL, input=texts)
+        resp = self._client.embeddings.create(model=self.embedding_model, input=texts)
         data = sorted(resp.data, key=lambda d: d.index)
         return np.array([d.embedding for d in data], dtype=np.float32)
 
@@ -165,6 +176,7 @@ class VectorStore:
         return h.hexdigest()
 
     def build(self, force: bool = False) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         chunks = load_chunks(self.kb_dir)
         if not chunks:
             raise RuntimeError(f"No documents found in {self.kb_dir}")
@@ -173,7 +185,7 @@ class VectorStore:
 
         if not force and self.index_path.exists() and self.meta_path.exists():
             meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
-            wanted = config.EMBEDDING_MODEL if self._client else "local"
+            wanted = self.embedding_model if self._client else "local"
             if (
                 meta.get("version") == INDEX_VERSION
                 and meta["fingerprint"] == fp
@@ -189,7 +201,7 @@ class VectorStore:
         backend = "remote"
         try:
             matrix = self._embed(texts, "remote")
-            self.embedder = config.EMBEDDING_MODEL
+            self.embedder = self.embedding_model
         except Exception as exc:  # noqa: BLE001 - narrowed in Phase 5 (async RAG)
             log.warning("Remote embeddings unavailable (%s); using local embedder", exc)
             matrix = self._embed(texts, "local")
