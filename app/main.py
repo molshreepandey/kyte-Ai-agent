@@ -21,6 +21,8 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.types import Receive, Scope, Send
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from . import admin, api, health
 from .agent import Agent
@@ -95,6 +97,9 @@ def create_app(
         path_limits={"/api/stt": settings.stt_max_body_bytes},
     )
     app.add_middleware(RequestContextMiddleware, hsts=settings.is_production)
+    if settings.trust_proxy_headers:
+        # Outermost: set the real client address before rate limiting sees the request.
+        app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
     install_error_handlers(app)
 
     app.include_router(api.router)
@@ -109,6 +114,25 @@ def create_app(
 
     app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
     return app
+
+
+class _LazyApp:
+    """ASGI entry point for ``uvicorn app.main:app`` (without ``--factory``).
+
+    The real application is built on the first ASGI call (uvicorn's lifespan startup),
+    so importing this module still reads no settings and has no side effects.
+    """
+
+    def __init__(self) -> None:
+        self._app: FastAPI | None = None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self._app is None:
+            self._app = create_app()
+        await self._app(scope, receive, send)
+
+
+app = _LazyApp()
 
 
 def describe_config_errors(exc: ValidationError) -> str:

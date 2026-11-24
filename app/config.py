@@ -9,6 +9,7 @@ Variable names are the upper-case field names (e.g. `llm_model` <- `LLM_MODEL`).
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -65,6 +66,12 @@ class Settings(BaseSettings):
     max_json_body_bytes: int = Field(default=64 * 1024, ge=1024, le=10_000_000)
     rate_limit_per_minute: int = Field(default=30, ge=1)
     rate_limit_burst: int = Field(default=10, ge=1)
+    # Take the client IP from X-Forwarded-For. Required behind a reverse proxy / load
+    # balancer, otherwise every visitor shares the proxy's IP and one rate-limit bucket.
+    # Defaults to true on Render (which sets RENDER=true), false elsewhere.
+    trust_proxy_headers: bool = Field(
+        default_factory=lambda: os.environ.get("RENDER", "").strip().lower() == "true"
+    )
 
     # ---------------------------------------------------------------- logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"

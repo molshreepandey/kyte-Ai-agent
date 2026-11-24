@@ -44,7 +44,7 @@ import app.security, app.errors, app.ratelimit, app.logging_config, app.dependen
 from app.config import get_settings
 assert get_settings.cache_info().currsize == 0, "settings were read at import"
 assert logging.getLogger().handlers == [], "logging was configured at import"
-assert not hasattr(app.main, "app"), "an app instance was created at import"
+assert app.main.app._app is None, "an app instance was created at import"
 print("clean")
 """
     env = {"PATH": "/usr/bin:/bin"}
@@ -218,3 +218,42 @@ def test_concurrent_requests_stay_isolated(tmp_path: Path) -> None:
             assert body["answer"] == f"echo:{text}"
             history = [m["content"] for m in agent.sessions[sid]]
             assert history == [text, f"echo:{text}"]  # nothing from any other session
+
+
+# ======================================================= deployment entry points
+def test_module_level_app_builds_lazily_and_serves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`uvicorn app.main:app` (no --factory) must keep working for existing deployments."""
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: make_settings(tmp_path))
+    lazy = main_module._LazyApp()
+    assert lazy._app is None
+    with TestClient(lazy) as client:
+        assert client.get("/health/live").json() == {"status": "ok"}
+        assert client.get("/").status_code == 200
+    assert lazy._app is not None
+
+
+def _limiter_keys(client: TestClient) -> set[str]:
+    return set(client.app.state.limiter._buckets)  # type: ignore[attr-defined]
+
+
+def test_client_ip_from_proxy_headers_when_trusted(tmp_path: Path) -> None:
+    with _client(tmp_path, trust_proxy_headers=True) as client:
+        client.post("/api/reset", data={"session_id": "abcdefgh"}, headers={"X-Forwarded-For": "203.0.113.7"})
+        assert "ip:203.0.113.7" in _limiter_keys(client)
+
+
+def test_proxy_headers_ignored_by_default(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        client.post("/api/reset", data={"session_id": "abcdefgh"}, headers={"X-Forwarded-For": "203.0.113.7"})
+        assert "ip:203.0.113.7" not in _limiter_keys(client)
+
+
+def test_proxy_headers_trusted_by_default_on_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import Settings
+
+    monkeypatch.setenv("RENDER", "true")
+    assert Settings(_env_file=None).trust_proxy_headers is True  # type: ignore[call-arg]
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "false")
+    assert Settings(_env_file=None).trust_proxy_headers is False  # type: ignore[call-arg]

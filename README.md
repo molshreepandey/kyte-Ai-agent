@@ -83,6 +83,7 @@ For production set `ENVIRONMENT=production` (requires `OPENROUTER_API_KEY`, disa
 | `MAX_TEXT_CHARS` | no | `2000` | Maximum chat message length |
 | `MAX_AUDIO_BYTES` | no | `2000000` | Maximum STT upload size (about 60 s of 16 kHz audio) |
 | `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_BURST` | no | `30` / `10` | Per-client-IP (and per-session) token bucket for `/api/*` and `/admin/*` |
+| `TRUST_PROXY_HEADERS` | no | `true` on Render, else `false` | Use `X-Forwarded-For` as the client IP (needed behind a proxy so rate limits are per user) |
 | `LOG_LEVEL` | no | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `LOG_FORMAT` | no | `text` (dev) / `json` (prod) | `json` = one object per line with `request_id` and `session_id` |
 | `LOG_FILE` | no | (none) | Also write logs to this rotating file (10 MB x 5) |
